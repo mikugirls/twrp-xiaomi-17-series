@@ -7,9 +7,9 @@ Device trees for building Team Win Recovery Project (TWRP) for the Xiaomi 17 Ser
 | Device            | Codename  | Folder                                                  | Status |
 | ------------------ | --------- | -------------------------------------------------------- | ------ |
 | Xiaomi 17          | Pudding   | [`twrp_device_xiaomi_pudding`](twrp_device_xiaomi_pudding)   | Boots, touch, decrypt working |
-| Xiaomi 17 Pro       | Pandora   | [`twrp_device_xiaomi_pandora`](twrp_device_xiaomi_pandora)   | Boots, touch, decrypt working |
+| Xiaomi 17 Pro       | Pandora   | [`twrp_device_xiaomi_pandora`](twrp_device_xiaomi_pandora)   | Boots, touch working; decrypt not stable |
 | Xiaomi 17 Pro Max   | Popsicle  | [`twrp_device_xiaomi_popsicle`](twrp_device_xiaomi_popsicle) | Boots, touch, decrypt working |
-| Xiaomi 17 Ultra     | Nezha     | [`twrp_device_xiaomi_nezha`](twrp_device_xiaomi_nezha)       | Boots, touch working; decrypt in progress |
+| Xiaomi 17 Ultra     | Nezha     | [`twrp_device_xiaomi_nezha`](twrp_device_xiaomi_nezha)       | Boots, touch working; decrypt not yet confirmed, should work in theory |
 
 Each device folder is a self-contained TWRP device tree (BoardConfig, device makefile, fstab, prebuilt blobs, source patches) with its own `README.md` describing that device in detail.
 
@@ -21,23 +21,39 @@ Built recovery images (stock-AVB, ready to `fastboot flash recovery`) are publis
 
 ### Xiaomi 17 (Pudding)
 
-* Working: boot, touch, data decryption
-* Known issue: AnyKernel3-based kernel-zip installers fail active-slot detection unless patched separately (the recovery's own A/B flashing is unaffected)
+* Working: boot, touch, data decryption (stable)
 
 ### Xiaomi 17 Pro (Pandora)
 
-* Working: boot, touch, data decryption (NXP Weaver + StrongBox)
-* Note: NXP StrongBox must start early in the boot chain, before the real `/vendor` mount hides the ramdisk OMAPI manifest, then wait for the SharedSecret negotiation to conclude before Weaver starts
+* Working: boot, touch
+* Not stable: data decryption (NXP Weaver + StrongBox). StrongBox timing
+  relative to the real `/vendor` mount and OMAPI visibility has needed several
+  corrections and is not yet reliably reproducible.
 
 ### Xiaomi 17 Pro Max (Popsicle)
 
-* Working: boot, touch, data decryption (NXP Weaver + Gatekeeper, no StrongBox)
-* Known issue: after flashing a ROM update newer than the recovery's own donor firmware, the post-install partition refresh can log EROFS/ext4 fstab mismatches on dynamic partitions; use a matching or newer stock recovery donor with an EROFS-only dynamic fstab
+* Working: boot, touch, data decryption (NXP Weaver + Gatekeeper, no StrongBox, stable)
 
 ### Xiaomi 17 Ultra (Nezha)
 
 * Working: boot, touch (kernel-module only, no userspace touch-report service)
-* In progress: full user-data decryption. StrongBox has been removed from the boot chain (Weaver + Gatekeeper only, Gatekeeper running in non-SPU mode); both known `system/vold/Decrypt.cpp` bugs are patched. Not yet confirmed working on real hardware.
+* Not yet confirmed: full user-data decryption. StrongBox has been removed
+  from the boot chain (Weaver + Gatekeeper only, Gatekeeper running in
+  non-SPU mode); both known `system/vold/Decrypt.cpp` bugs are patched. This
+  should work in theory but has not been confirmed on real hardware yet.
+
+## Known issue: mount failures after flashing a ROM update
+
+On Popsicle, flashing a ROM update newer than the recovery's own donor
+firmware version has caused the post-install partition refresh to fail to
+mount the dynamic super partitions (EROFS/ext4 fstab mismatch), sometimes
+leaving the recovery in a state where storage stays unmounted and even
+reflashing the recovery from within TWRP fails until a reboot. Since the
+underlying cause is a stale donor-recovery-vs-flashed-ROM fstab mismatch
+rather than anything Popsicle-specific, the same class of failure is
+suspected to be able to affect any of the four devices if their recovery is
+built against an older donor than the ROM being flashed — not yet confirmed
+on the other three, but treat it as a general risk, not a Popsicle-only one.
 
 ## Decrypt fix shared across all four devices
 

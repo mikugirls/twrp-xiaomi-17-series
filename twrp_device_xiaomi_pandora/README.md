@@ -20,18 +20,26 @@ Device tree for building Team Win Recovery Project (TWRP) for the Xiaomi 17 Pro 
 
 * Boots successfully
 * Touchscreen
-* Data decryption (NXP Weaver + StrongBox)
 * ADB / Fastbootd
+
+### Not stable
+
+* Data decryption (NXP Weaver + StrongBox). StrongBox timing relative to the
+  real `/vendor` mount and the OMAPI manifest visibility has gone through
+  several corrections and is not yet reliably reproducible; treat the current
+  build as best-effort, not confirmed stable.
 
 ### Notes on the decrypt runtime
 
-The NXP StrongBox service must be started early, right after
+The NXP StrongBox service needs to start early, right after
 `vendor.secure_element`, `se_omapi`, `vendor.keymint`, and `keystore2` are up,
 and before the real `/vendor` mount can hide the ramdisk OMAPI manifest.
 Waiting on stricter pre-conditions (`vendor.qseecomd`, `vendor.minkdaemon`)
 before starting StrongBox delays it long enough to break the OMAPI view and
 stall decrypt. Once StrongBox reaches `Shared secret negotiation concluded
-successfully.`, NXP Weaver is started and completes the decrypt.
+successfully.`, NXP Weaver is started to complete the decrypt — but this
+sequencing has proven fragile across builds and still needs a confirmed
+stable repro.
 
 ## Notes
 
