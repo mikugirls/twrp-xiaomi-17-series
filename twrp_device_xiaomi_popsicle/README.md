@@ -34,15 +34,20 @@ Weaver.
 
 ### Known Issues
 
-* After flashing a ROM update newer than the recovery's own donor firmware
-  version, the post-install partition refresh can log EROFS/ext4 fstab
-  mismatches for the dynamic super partitions, sometimes leaving storage
-  unmounted and recovery unable to reflash itself until a reboot. Use a
-  recovery built against a matching or newer stock recovery donor and an
-  EROFS-only fstab for the dynamic partitions to avoid this. The underlying
-  cause (stale donor recovery vs. a newer flashed ROM) is not specific to this
-  device — any of the four devices could hit it if their recovery donor falls
-  behind the ROM being flashed.
+* Flashing a ROM update can leave the running recovery unable to mount
+  storage afterward, sometimes to the point that recovery cannot even
+  reflash itself from within TWRP — until recovery is rebooted, after which
+  everything works again. Because a same-session reboot fixes it without any
+  reflash, the cause looks like a stale `dm-linear` (dynamic/super partition)
+  device-mapper state rather than a wrong fstab entry: those mappings are
+  created once at boot from the super partition layout at that time, and a
+  ROM flash that rewrites the super partition does not get picked up by the
+  already-running recovery until it reboots and recreates them. A possible
+  source-level fix is forcing TWRP to re-detect/resize the super partition
+  after an install completes (see `TWPartitionManager::Setup_Super_Partition`
+  / `Update_Size`) instead of only at startup. Not specific to this device —
+  any of the four could hit it after a flash that changes the dynamic
+  partition layout.
 
 ## Notes
 

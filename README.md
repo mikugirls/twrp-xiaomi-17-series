@@ -44,16 +44,24 @@ Built recovery images (stock-AVB, ready to `fastboot flash recovery`) are publis
 
 ## Known issue: mount failures after flashing a ROM update
 
-On Popsicle, flashing a ROM update newer than the recovery's own donor
-firmware version has caused the post-install partition refresh to fail to
-mount the dynamic super partitions (EROFS/ext4 fstab mismatch), sometimes
-leaving the recovery in a state where storage stays unmounted and even
-reflashing the recovery from within TWRP fails until a reboot. Since the
-underlying cause is a stale donor-recovery-vs-flashed-ROM fstab mismatch
-rather than anything Popsicle-specific, the same class of failure is
-suspected to be able to affect any of the four devices if their recovery is
-built against an older donor than the ROM being flashed — not yet confirmed
-on the other three, but treat it as a general risk, not a Popsicle-only one.
+On Popsicle, flashing a ROM update can leave the running recovery unable to
+mount storage afterward, sometimes to the point that recovery cannot even
+reflash itself from within TWRP — until recovery is rebooted, after which
+everything works again. The fact that a same-session reboot fixes it (no
+reflash needed) points to a stale device-mapper state rather than a wrong
+fstab entry: TWRP creates the `dm-linear` mappings for the dynamic ("super")
+partitions once at boot, from the super partition layout as it exists at that
+moment. A ROM flash rewrites the super partition (partition boundaries/sizes
+for system/vendor/product/etc.), but the already-running recovery keeps using
+its old, now-stale `dm-linear` mappings — it does not re-scan the super
+partition mid-session. Only a reboot tears down and recreates those mappings
+against the current super partition metadata, which is why the reboot
+resolves it. A possible source-level fix is forcing TWRP to re-detect/resize
+the super partition after an install completes rather than only at startup
+(see `TWPartitionManager::Setup_Super_Partition` / `Update_Size`). This is not
+Popsicle-specific — the same class of failure could in theory hit any of the
+four devices after a flash that changes the dynamic partition layout; not yet
+confirmed on the other three.
 
 ## Decrypt fix shared across all four devices
 
