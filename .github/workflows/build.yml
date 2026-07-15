@@ -1,0 +1,216 @@
+name: Build TWRP for Xiaomi 17 Series
+
+on:
+  push:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        device: [pudding, pandora, popsicle, nezha]
+
+    steps:
+      - name: 基础环境配置
+        run: |
+          sudo apt update
+          sudo apt install -y git-core gnupg flex bison build-essential zip curl \
+            zlib1g-dev gcc-multilib g++-multilib libc6-dev-i386 libncurses5 \
+            lib32ncurses5-dev x11proto-core-dev libx11-dev libgl1-mesa-glx \
+            libxml2-utils xsltproc unzip python3 python-is-python3 libssl-dev \
+            rsync
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+
+      - name: 清理磁盘空间
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/local/.ghcup
+          sudo rm -rf /opt/microsoft
+          sudo apt clean
+          df -h
+
+      - name: 安装 repo 工具
+        run: |
+          mkdir -p ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod +x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: 增加 Swap 空间（24GB）
+        run: |
+          if [ -f /swapfile ]; then
+            sudo swapoff /swapfile
+            sudo rm -f /swapfile
+          fi
+          sudo dd if=/dev/zero of=/swapfile bs=1M count=24576
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          swapon --show
+          free -h
+
+      - name: 拉取 TWRP AOSP 源码（twrp-16.0）
+        run: |
+          mkdir -p ~/twrp_root
+          cd ~/twrp_root
+          repo init --depth=1 -u https://github.com/TWRP-Test/platform_manifest_twrp_aosp.git -b twrp-16.0
+          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
+
+      - name: 克隆设备树仓库
+        run: |
+          cd ~/twrp_root
+          git clone https://github.com/${{ github.repository }} device_tree
+
+      - name: 准备设备树
+        run: |
+          cd ~/twrp_root
+          DEVICE=${{ matrix.device }}
+          mkdir -p device/xiaomi/sm8750_thales
+          cp -r device_tree/twrp_device_xiaomi_$DEVICE/. device/xiaomi/sm8750_thales/
+          rm -rf device_tree
+
+      - name: 应用补丁
+        run: |
+          cd ~/twrp_root
+          DEVICE=${{ matrix.device }}
+          PATCH_DIR="$PWD/device/xiaomi/sm8750_thales/patches"
+          if [ -d "$PATCH_DIR" ] && [ -n "$(ls -A "$PATCH_DIR" 2>/dev/null)" ]; then
+            echo "Applying patches from $PATCH_DIR"
+            for patch in "$PATCH_DIR"/*.patch; do
+              if [ -f "$patch" ]; then
+                if [[ "$patch" == *"vold"* ]]; then
+                  TARGET_DIR="system/vold"
+                elif [[ "$patch" == *"recovery"* ]]; then
+                  TARGET_DIR="bootable/recovery"
+                else
+                  TARGET_DIR="bootable/recovery"
+                fi
+                echo "Applying $(basename "$patch") to $TARGET_DIR"
+                if git -C "$TARGET_DIR" apply --reverse --check "$patch" 2>/dev/null; then
+                  echo "Patch already applied, skipping"
+                else
+                  git -C "$TARGET_DIR" apply "$patch" || { echo "ERROR: Failed to apply $patch"; exit 1; }
+                  echo "Applied $(basename "$patch")"
+                fi
+              fi
+            done
+          else
+            echo "No patches found for $DEVICE, skipping."
+          fi
+
+      - name: 编译 TWRP
+        env:
+          MAKEFLAGS: -j3
+        run: |
+          cd ~/twrp_root
+          export OUT_DIR="out-clean-audit"
+          rm -rf "$OUT_DIR"
+
+          source build/envsetup.sh
+          lunch twrp_sm8750_thales-bp2a-eng
+
+          # 用 mka 尝试完整编译（会生成 Ninja 文件）
+          echo "mka recoveryimage"
+          mka recoveryimage -j3 || true
+
+          # 如果 mka 没生成 recovery.img，用 ninja 强制构建
+          if [ ! -f "$OUT_DIR/target/product/sm8750_thales/recovery.img" ]; then
+            echo "ninja forced build"
+            # 检查 Ninja 文件是否存在
+            NINJA_FILE="out-clean-audit/build-twrp_sm8750_thales.ninja"
+            if [ ! -f "$NINJA_FILE" ]; then
+              echo "❌ Ninja file not found: $NINJA_FILE"
+              echo "=== Available ninja files ==="
+              find out-clean-audit -name "*.ninja" 2>/dev/null || echo "No ninja files found"
+              exit 1
+            fi
+            
+            # 用 ninja 强制构建 recoveryimage
+            prebuilts/build-tools/linux-x86/bin/ninja -f "$NINJA_FILE" recoveryimage
+          fi
+
+          # 最终检查
+          if [ ! -f "$OUT_DIR/target/product/sm8750_thales/recovery.img" ]; then
+            echo "❌ recovery.img 未生成"
+            echo "=== 查找所有 recovery.img ==="
+            find out-clean-audit -name "recovery.img" 2>/dev/null || echo "确实没有 recovery.img"
+            echo "=== out-clean-audit/target/product 目录内容 ==="
+            ls -la out-clean-audit/target/product/ 2>/dev/null || echo "目录不存在"
+            exit 1
+          fi
+          echo "✅ recovery.img 生成成功"
+
+      - name: 打包编译产物
+        run: |
+          DEVICE=${{ matrix.device }}
+          cd ~/twrp_root/out-clean-audit/target/product/sm8750_thales
+          if [ -f recovery.img ]; then
+            mv recovery.img twrp-${DEVICE}-android16.img
+            zip -j twrp-${DEVICE}-android16.zip twrp-${DEVICE}-android16.img
+            echo "打包成功"
+          else
+            echo "未找到 recovery.img"
+            find ~/twrp_root -name "recovery.img" 2>/dev/null || echo "确实没有"
+            exit 1
+          fi
+
+      - name: 上传成品到工作流附件
+        uses: actions/upload-artifact@v7
+        with:
+          name: TWRP-${{ matrix.device }}-Android16
+          path: ~/twrp_root/out*/**/twrp-${{ matrix.device }}-android16.zip
+          if-no-files-found: error
+
+  create_release:
+    runs-on: ubuntu-22.04
+    needs: build
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+    steps:
+      - name: 下载所有编译产物
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: 生成统一的 Tag（日期+序号）
+        id: generate_tag
+        run: |
+          DATE=$(TZ=Asia/Shanghai date +'%Y%m%d')
+          TAGS=$(git ls-remote --tags origin | grep -o "refs/tags/TWRP-All-${DATE}[0-9][0-9]$" | sed 's/.*TWRP-All-//' | sort)
+          if [ -z "$TAGS" ]; then
+            SEQ=1
+          else
+            MAX=$(echo "$TAGS" | tail -1)
+            SEQ=$((MAX + 1))
+          fi
+          SEQ2=$(printf "%02d" $SEQ)
+          TAG="TWRP-All-${DATE}${SEQ2}"
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "Generated tag: $TAG"
+
+      - name: 发布统一 Release（包含所有机型）
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.TAG }}
+          name: "TWRP All Devices ${{ env.TAG }}"
+          body: |
+            - 包含设备：小米 17 (pudding)、17 Pro (pandora)、17 Pro Max (popsicle)、17 Ultra (nezha)
+            - 基于 twrp-16.0 分支
+            - 点击下方 Assets 下载对应机型的 zip 包
+          draft: false
+          prerelease: false
+          files: artifacts/**/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
